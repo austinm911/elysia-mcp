@@ -1,7 +1,5 @@
 # Elysia MCP Plugin 
 
-> ⚠️ Under Development
-
 A comprehensive ElysiaJS plugin for implementing
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers
 with HTTP transport support.
