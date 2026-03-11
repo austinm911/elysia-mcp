@@ -187,6 +187,11 @@ export interface EventStore {
    */
   storeEvent(streamId: StreamId, message: JSONRPCMessage): Promise<EventId>;
 
+  /**
+   * Optional lookup to correlate an event ID to its stream during replay.
+   */
+  getStreamIdForEventId?(eventId: EventId): Promise<StreamId | undefined>;
+
   replayEventsAfter(
     lastEventId: EventId,
     {
@@ -226,6 +231,11 @@ export interface StreamableHTTPServerTransportOptions {
    * If provided, resumability will be enabled, allowing clients to reconnect and resume messages
    */
   eventStore?: EventStore;
+
+  /**
+   * Suggested client reconnect interval for SSE polling behavior.
+   */
+  retryInterval?: number;
 
   /**
    * @deprecated Use logger option instead

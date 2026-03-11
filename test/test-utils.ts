@@ -6,7 +6,12 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js';
 import Elysia from 'elysia';
 import { z } from 'zod';
-import { mcp, transports } from '../src';
+import {
+  createUnauthorizedResponse,
+  mcp,
+  transports,
+  type ProtectedResourceMetadataOptions,
+} from '../src';
 import { ElysiaStreamingHttpTransport } from '../src/transport';
 import type { EventStore, McpContext } from '../src/types';
 
@@ -230,6 +235,7 @@ interface TestServerConfig {
   authentication?: (
     context: McpContext
   ) => Promise<{ authInfo?: AuthInfo; response?: unknown }>;
+  protectedResourceMetadata?: ProtectedResourceMetadataOptions;
 }
 
 export type TestServer =
@@ -260,7 +266,7 @@ export async function createTestServer(config?: TestServerConfig) {
 
   const enableJson = config?.enableJsonResponse ?? false;
   const transport = new ElysiaStreamingHttpTransport({
-    sessionIdGenerator: config?.sessionIdGenerator ?? Bun.randomUUIDv7,
+    sessionIdGenerator: config?.sessionIdGenerator ?? crypto.randomUUID,
     enableJsonResponse: enableJson,
     eventStore: config?.eventStore,
     enableLogging: false, // Disable logging in tests
@@ -299,7 +305,7 @@ export async function createTestServer(config?: TestServerConfig) {
  * Helper to create and start authenticated test HTTP server with MCP setup
  */
 export async function createTestAuthServer(
-  config: TestServerConfig = { sessionIdGenerator: () => Bun.randomUUIDv7() }
+  config: TestServerConfig = { sessionIdGenerator: () => crypto.randomUUID() }
 ) {
   const mcpServer = new McpServer(
     { name: 'test-server', version: '1.0.0' },
@@ -336,6 +342,7 @@ export async function createTestAuthServer(
         version: '1.0.0',
       },
       authentication: config.authentication,
+      protectedResourceMetadata: config.protectedResourceMetadata,
       enableLogging: false, // Disable logging in tests
     })
   );
@@ -350,6 +357,8 @@ export async function createTestAuthServer(
   await mcpServer.connect(transport);
   return { server, transport, mcpServer };
 }
+
+export { createUnauthorizedResponse };
 
 /**
  * Helper to stop test server

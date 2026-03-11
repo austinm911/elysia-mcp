@@ -76,12 +76,157 @@ export interface MCPPluginOptions {
    * Event store for resumability support
    */
   eventStore?: EventStore;
+
+  /**
+   * Additional allowed origins for HTTP requests.
+   * Requests without an Origin header are allowed.
+   * Requests with an Origin header must match the request origin or one of these values.
+   */
+  allowedOrigins?: string[];
+
+  /**
+   * Disable the default Origin validation required for HTTP MCP servers.
+   * This is unsafe and should only be used behind trusted infrastructure.
+   */
+  unsafeDisableOriginCheck?: boolean;
+
+  /**
+   * Protected resource metadata published for MCP authorization discovery.
+   */
+  protectedResourceMetadata?: ProtectedResourceMetadataOptions;
+}
+
+export interface ProtectedResourceMetadataOptions {
+  authorizationServers: string[];
+  scopesSupported?: string[];
+  resourceName?: string;
+  resourceDocumentationUrl?: string;
+}
+
+export interface AuthChallengeOptions {
+  error?: string;
+  errorDescription?: string;
+  resourceMetadataUrl?: string;
+  scope?: string[];
 }
 
 export const transports: Record<string, ElysiaStreamingHttpTransport> = {};
 
 // Export logger types and utilities for external use
 export { type ILogger, ConsoleLogger, SilentLogger, createLogger } from './utils/logger';
+
+const createJsonErrorResponse = (status: number, message: string, code = -32000) =>
+  new Response(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      error: { code, message },
+      id: null,
+    }),
+    {
+      status,
+      headers: {
+        'content-type': 'application/json',
+      },
+    }
+  );
+
+const createJsonRpcErrorBody = (message: string, code = -32000) => ({
+  jsonrpc: '2.0' as const,
+  error: { code, message },
+  id: null,
+});
+
+const buildWwwAuthenticateHeader = (options: AuthChallengeOptions = {}) => {
+  let header = 'Bearer';
+
+  if (options.error) {
+    header += ` error="${options.error}"`;
+  }
+
+  if (options.errorDescription) {
+    header += `${options.error ? ',' : ''} error_description="${options.errorDescription}"`;
+  }
+
+  if (options.scope && options.scope.length > 0) {
+    header += `${options.error || options.errorDescription ? ',' : ''} scope="${options.scope.join(' ')}"`;
+  }
+
+  if (options.resourceMetadataUrl) {
+    header += `${options.error || options.errorDescription || options.scope?.length ? ',' : ''} resource_metadata="${options.resourceMetadataUrl}"`;
+  }
+
+  return header;
+};
+
+export const createUnauthorizedResponse = (
+  options: AuthChallengeOptions = {}
+) =>
+  new Response(
+    JSON.stringify(
+      createJsonRpcErrorBody(
+        options.errorDescription ?? 'Unauthorized',
+        -32000
+      )
+    ),
+    {
+      status: 401,
+      headers: {
+        'content-type': 'application/json',
+        'www-authenticate': buildWwwAuthenticateHeader({
+          ...options,
+          error: options.error ?? 'invalid_token',
+        }),
+      },
+    }
+  );
+
+export const createInsufficientScopeResponse = (
+  options: AuthChallengeOptions = {}
+) =>
+  new Response(
+    JSON.stringify(
+      createJsonRpcErrorBody(
+        options.errorDescription ?? 'Insufficient scope',
+        -32000
+      )
+    ),
+    {
+      status: 403,
+      headers: {
+        'content-type': 'application/json',
+        'www-authenticate': buildWwwAuthenticateHeader({
+          ...options,
+          error: options.error ?? 'insufficient_scope',
+        }),
+      },
+    }
+  );
+
+const normalizeBasePath = (basePath: string) =>
+  basePath === '/' ? '' : basePath.startsWith('/') ? basePath : `/${basePath}`;
+
+export const getOAuthProtectedResourceMetadataPath = (basePath: string) =>
+  `/.well-known/oauth-protected-resource${normalizeBasePath(basePath)}`;
+
+export const getOAuthProtectedResourceMetadataUrl = (
+  serverUrl: string | URL,
+  basePath: string
+) => new URL(getOAuthProtectedResourceMetadataPath(basePath), serverUrl).href;
+
+const hasValidOrigin = (request: Request, allowedOrigins: string[] = []) => {
+  const originHeader = request.headers.get('origin');
+  if (!originHeader) {
+    return true;
+  }
+
+  try {
+    const requestOrigin = new URL(request.url).origin;
+    const origin = new URL(originHeader).origin;
+    return origin === requestOrigin || allowedOrigins.includes(origin);
+  } catch {
+    return false;
+  }
+};
 
 // Main MCP plugin for Elysia
 export const mcp = (options: MCPPluginOptions = {}) => {
@@ -105,6 +250,8 @@ export const mcp = (options: MCPPluginOptions = {}) => {
   })();
 
   const basePath = options.basePath || '/mcp';
+  const protectedResourceMetadataPath =
+    getOAuthProtectedResourceMetadataPath(basePath);
   
   // Create logger with support for custom logger instances
   const logger = createLogger({
@@ -177,7 +324,7 @@ export const mcp = (options: MCPPluginOptions = {}) => {
         isInitializeRequest(body);
       if (!sessionId && isInitialize) {
         const transport = new ElysiaStreamingHttpTransport({
-          sessionIdGenerator: () => Bun.randomUUIDv7(),
+          sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sessionId) => {
             transports[sessionId] = transport;
           },
@@ -225,6 +372,13 @@ export const mcp = (options: MCPPluginOptions = {}) => {
   const app = new Elysia({ name: `mcp-${serverInfo.name}` })
     .state('authInfo', undefined as AuthInfo | undefined)
     .onBeforeHandle(async (context) => {
+      if (
+        !options.unsafeDisableOriginCheck &&
+        !hasValidOrigin(context.request, options.allowedOrigins)
+      ) {
+        return createJsonErrorResponse(403, 'Forbidden: Invalid Origin header');
+      }
+
       const protocolVersion = context.request.headers.get(
         'mcp-protocol-version'
       );
@@ -246,7 +400,7 @@ export const mcp = (options: MCPPluginOptions = {}) => {
 
       if (context.request.method === 'POST') {
         const contentType = context.request.headers.get('content-type');
-        if (contentType !== 'application/json') {
+        if (!contentType || !contentType.includes('application/json')) {
           context.set.status = 415;
           return {
             jsonrpc: '2.0',
@@ -257,6 +411,14 @@ export const mcp = (options: MCPPluginOptions = {}) => {
             },
             id: null,
           };
+        }
+
+        if (Array.isArray(context.body)) {
+          return createJsonErrorResponse(
+            400,
+            'Bad Request: Streamable HTTP POST requests must include exactly one JSON-RPC message',
+            ErrorCode.InvalidRequest
+          );
         }
       }
 
@@ -273,6 +435,27 @@ export const mcp = (options: MCPPluginOptions = {}) => {
         }
         // if no authInfo or response is provided, continue
       }
+    })
+    .get(protectedResourceMetadataPath, ({ request, set }) => {
+      if (!options.protectedResourceMetadata) {
+        set.status = 404;
+        return;
+      }
+
+      set.headers = {
+        'content-type': 'application/json',
+        'access-control-allow-origin': '*',
+      };
+
+      return {
+        resource: new URL(basePath, request.url).href,
+        authorization_servers:
+          options.protectedResourceMetadata.authorizationServers,
+        scopes_supported: options.protectedResourceMetadata.scopesSupported,
+        resource_name: options.protectedResourceMetadata.resourceName,
+        resource_documentation:
+          options.protectedResourceMetadata.resourceDocumentationUrl,
+      };
     })
     .onError(({ error, code, set }) => {
       if (code === 'PARSE') {

@@ -1,4 +1,4 @@
-# Elysia MCP Plugin 
+# Elysia MCP Plugin
 
 A comprehensive ElysiaJS plugin for implementing
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers
@@ -6,13 +6,15 @@ with HTTP transport support.
 
 ## Features
 
-- **HTTP Transport**: Full HTTP-based MCP transport with Streamable HTTP
+- **Streamable HTTP**: Built on the official MCP SDK web-standard transport
 - **Session Management**: Stateful session handling via headers
 - **Type-Safe**: Built with TypeScript and Zod validation
 - **Easy Integration**: Simple plugin architecture for Elysia apps
 - **Comprehensive Support**: Tools, Resources, Prompts, and Logging
 - **Custom Logger Support**: Use any logger (pino, winston, bunyan, etc.)
 - **Error Handling**: Proper JSON-RPC 2.0 error responses
+- **Security Defaults**: Origin validation enabled by default for HTTP requests
+- **Authorization Discovery**: Protected resource metadata and Bearer challenge helpers
 - **Testing**: Full unit test coverage with Bun test runner
 
 ## Installation
@@ -152,6 +154,15 @@ This example demonstrates how to create multiple MCP plugins in a single Elysia 
 - `stateless`: Enable stateless mode (no session management)
 - `authentication`: Authentication handler for protected routes
 - `eventStore`: Event store for resumability support
+- `allowedOrigins`: Additional allowed `Origin` values for browser-based requests
+- `unsafeDisableOriginCheck`: Disable default origin validation
+- `protectedResourceMetadata`: Publish OAuth protected resource metadata for MCP auth discovery
+
+### Transport Notes
+
+- Streamable HTTP `POST` requests must include exactly one JSON-RPC message. Batch POST payloads are rejected with `400 Invalid Request`.
+- Requests without an `Origin` header are allowed. Requests with an `Origin` header must match the request origin or one of `allowedOrigins`.
+- Protected resource metadata is published at `/.well-known/oauth-protected-resource{basePath}` when `protectedResourceMetadata` is configured.
 
 ### Session Management
 

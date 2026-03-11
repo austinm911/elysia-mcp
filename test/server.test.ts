@@ -6,9 +6,13 @@ import type {
   EventStore,
   StreamId,
 } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import {
+  isInitializeRequest,
+  type JSONRPCMessage,
+} from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import {
+  createUnauthorizedResponse,
   createTestAuthServer,
   createTestServer,
   readSSEEvent,
@@ -200,7 +204,7 @@ describe('ElysiaStreamingHttpTransport', () => {
     expectErrorResponse(
       errorData,
       -32600,
-      /Only one initialization request is allowed/
+      /Streamable HTTP POST requests must include exactly one JSON-RPC message/
     );
   });
 
@@ -439,6 +443,24 @@ describe('ElysiaStreamingHttpTransport', () => {
     );
   });
 
+  it('should reject requests with an invalid Origin header', async () => {
+    const response = await server.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Origin: 'https://evil.example',
+        },
+        body: JSON.stringify(TEST_MESSAGES.initialize),
+      })
+    );
+
+    expect(response.status).toBe(403);
+    const errorData = await response.json();
+    expectErrorResponse(errorData, -32000, /Invalid Origin header/);
+  });
+
   it('should reject POST requests without proper Accept header', async () => {
     sessionId = await initializeServer();
 
@@ -489,7 +511,23 @@ describe('ElysiaStreamingHttpTransport', () => {
     );
   });
 
-  it('should handle JSON-RPC batch notification messages with 202 response', async () => {
+  it('should accept application/json content types with parameters', async () => {
+    const response = await server.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          Accept: 'application/json, text/event-stream',
+          Origin: 'http://localhost',
+        },
+        body: JSON.stringify(TEST_MESSAGES.initialize),
+      })
+    );
+
+    expect(response.status).toBe(200);
+  });
+
+  it('should reject JSON-RPC batch notification messages', async () => {
     sessionId = await initializeServer();
 
     // Send batch of notifications (no IDs)
@@ -503,7 +541,13 @@ describe('ElysiaStreamingHttpTransport', () => {
       sessionId
     );
 
-    expect(response.status).toBe(202);
+    expect(response.status).toBe(400);
+    const errorData = await response.json();
+    expectErrorResponse(
+      errorData,
+      -32600,
+      /Streamable HTTP POST requests must include exactly one JSON-RPC message/
+    );
   });
 
   //remove from future version so skip batching for now
@@ -875,11 +919,33 @@ describe('ElysiaStreamingHttpTransport with AuthInfo', () => {
 
   beforeEach(async () => {
     const result = await createTestAuthServer({
-      sessionIdGenerator: () => Bun.randomUUIDv7(),
+      sessionIdGenerator: () => crypto.randomUUID(),
+      protectedResourceMetadata: {
+        authorizationServers: ['https://auth.example.com'],
+        scopesSupported: ['test-scope'],
+        resourceName: 'Test MCP Server',
+      },
       authentication: async (context) => {
+        const url = new URL(context.request.url);
+        const isProtectedResourceMetadataRequest =
+          context.request.method === 'GET' &&
+          url.pathname === '/.well-known/oauth-protected-resource/mcp';
+        const isInitialize =
+          context.request.method === 'POST' &&
+          isInitializeRequest(context.body);
+
+        if (isProtectedResourceMetadataRequest || isInitialize) {
+          return {};
+        }
+
         const authHeader = context.request.headers.get('authorization');
         if (!authHeader) {
-          return {};
+          return {
+            response: createUnauthorizedResponse({
+              errorDescription: 'Missing Authorization header',
+              resourceMetadataUrl: 'http://localhost/.well-known/oauth-protected-resource/mcp',
+            }),
+          };
         }
         const token = authHeader.split(' ')[1];
         return {
@@ -942,7 +1008,7 @@ describe('ElysiaStreamingHttpTransport with AuthInfo', () => {
     });
   });
 
-  it('should calls tool without authInfo when it is optional', async () => {
+  it('should call the tool with authInfo for inactive profiles too', async () => {
     sessionId = await initializeServer();
 
     const toolCallMessage: JSONRPCMessage = {
@@ -955,7 +1021,9 @@ describe('ElysiaStreamingHttpTransport with AuthInfo', () => {
       id: 'call-1',
     };
 
-    const response = await sendPostRequest(server, toolCallMessage, sessionId);
+    const response = await sendPostRequest(server, toolCallMessage, sessionId, {
+      authorization: 'Bearer second-token',
+    });
     expect(response.status).toBe(200);
 
     const text = await readSSEEvent(response);
@@ -966,11 +1034,56 @@ describe('ElysiaStreamingHttpTransport with AuthInfo', () => {
         content: [
           {
             type: 'text',
-            text: 'Inactive profile from token: undefined!',
+            text: 'Inactive profile from token: second-token!',
           },
         ],
       },
       id: 'call-1',
+    });
+  });
+
+  it('should return a Bearer challenge when authorization is missing', async () => {
+    sessionId = await initializeServer();
+
+    const toolCallMessage: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'profile',
+        arguments: { active: true },
+      },
+      id: 'call-auth-missing',
+    };
+
+    const response = await sendPostRequest(server, toolCallMessage, sessionId);
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toContain(
+      'Bearer error="invalid_token"'
+    );
+    expect(response.headers.get('www-authenticate')).toContain(
+      'resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"'
+    );
+  });
+
+  it('should serve protected resource metadata', async () => {
+    const response = await server.handle(
+      new Request('http://localhost/.well-known/oauth-protected-resource/mcp', {
+        method: 'GET',
+        headers: {
+          Origin: 'http://localhost',
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    const data = await response.json();
+    expect(data).toMatchObject({
+      resource: 'http://localhost/mcp',
+      authorization_servers: ['https://auth.example.com'],
+      scopes_supported: ['test-scope'],
+      resource_name: 'Test MCP Server',
     });
   });
 });
@@ -984,7 +1097,7 @@ describe('ElysiaStreamingHttpTransport with JSON Response Mode', () => {
 
   beforeEach(async () => {
     const result = await createTestServer({
-      sessionIdGenerator: () => Bun.randomUUIDv7(),
+      sessionIdGenerator: () => crypto.randomUUID(),
       enableJsonResponse: true,
     });
     server = result.server;
@@ -1028,7 +1141,7 @@ describe('ElysiaStreamingHttpTransport with JSON Response Mode', () => {
     });
   });
 
-  it('should return JSON response for batch requests', async () => {
+  it('should reject batch requests in JSON response mode', async () => {
     const batchMessages: JSONRPCMessage[] = [
       { jsonrpc: '2.0', method: 'tools/list', params: {}, id: 'batch-1' },
       {
@@ -1041,43 +1154,14 @@ describe('ElysiaStreamingHttpTransport with JSON Response Mode', () => {
 
     const response = await sendPostRequest(server, batchMessages, sessionId);
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(400);
     expect(response.headers.get('content-type')).toBe('application/json');
 
-    const results = await response.json();
-    expect(Array.isArray(results)).toBe(true);
-    expect(results).toHaveLength(2);
-
-    // Batch responses can come in any order
-    const listResponse = results.find(
-      (r: { id?: string }) => r.id === 'batch-1'
-    );
-    const callResponse = results.find(
-      (r: { id?: string }) => r.id === 'batch-2'
-    );
-
-    expect(listResponse).toEqual(
-      expect.objectContaining({
-        jsonrpc: '2.0',
-        id: 'batch-1',
-        result: expect.objectContaining({
-          tools: expect.arrayContaining([
-            expect.objectContaining({ name: 'greet' }),
-          ]),
-        }),
-      })
-    );
-
-    expect(callResponse).toEqual(
-      expect.objectContaining({
-        jsonrpc: '2.0',
-        id: 'batch-2',
-        result: expect.objectContaining({
-          content: expect.arrayContaining([
-            expect.objectContaining({ type: 'text', text: 'Hello, JSON!' }),
-          ]),
-        }),
-      })
+    const errorData = await response.json();
+    expectErrorResponse(
+      errorData,
+      -32600,
+      /Streamable HTTP POST requests must include exactly one JSON-RPC message/
     );
   });
 });
@@ -1246,7 +1330,7 @@ describe('ElysiaStreamingHttpTransport with resumability', () => {
       streamId: string,
       message: JSONRPCMessage
     ): Promise<string> {
-      const eventId = `${streamId}_${Bun.randomUUIDv7()}`;
+      const eventId = `${streamId}_${crypto.randomUUID()}`;
       storedEvents.set(eventId, { eventId, message });
       return eventId;
     },
@@ -1274,16 +1358,13 @@ describe('ElysiaStreamingHttpTransport with resumability', () => {
   beforeEach(async () => {
     storedEvents.clear();
     const result = await createTestServer({
-      sessionIdGenerator: () => Bun.randomUUIDv7(),
+      sessionIdGenerator: () => crypto.randomUUID(),
       eventStore,
     });
 
     server = result.server;
     transport = result.transport;
     mcpServer = result.mcpServer;
-
-    // Verify resumability is enabled on the transport
-    expect(transport['_eventStore']).toBeDefined();
 
     // Initialize the server
     const initResponse = await sendPostRequest(
