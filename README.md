@@ -1,21 +1,17 @@
 # Elysia MCP Plugin
 
-A comprehensive ElysiaJS plugin for implementing
-[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers
-with HTTP transport support.
+Elysia adapter for building [Model Context Protocol](https://modelcontextprotocol.io/) servers over the official MCP SDK's Streamable HTTP transport.
 
-## Features
+This fork is maintained around the MCP HTTP spec dated November 25, 2025. The package owns Elysia integration, request validation, and a small auth-discovery surface. It does not own custom transport semantics or a full OAuth server implementation.
 
-- **Streamable HTTP**: Built on the official MCP SDK web-standard transport
-- **Session Management**: Stateful session handling via headers
-- **Type-Safe**: Built with TypeScript and Zod validation
-- **Easy Integration**: Simple plugin architecture for Elysia apps
-- **Comprehensive Support**: Tools, Resources, Prompts, and Logging
-- **Custom Logger Support**: Use any logger (pino, winston, bunyan, etc.)
-- **Error Handling**: Proper JSON-RPC 2.0 error responses
-- **Security Defaults**: Origin validation enabled by default for HTTP requests
-- **Authorization Discovery**: Protected resource metadata and Bearer challenge helpers
-- **Testing**: Full unit test coverage with Bun test runner
+## What This Fork Maintains
+
+- Streamable HTTP via the official SDK `WebStandardStreamableHTTPServerTransport`
+- Stateful sessions and optional stateless mode
+- Default `Origin` validation for HTTP MCP servers
+- Single-message `POST` enforcement for Streamable HTTP
+- Protected resource metadata publishing
+- Bearer challenge helpers for caller-managed auth
 
 ## Installation
 
@@ -25,456 +21,195 @@ bun add elysia-mcp
 npm install elysia-mcp
 ```
 
-## Starter Template
-
-To quickly get started with a pre-configured Elysia MCP project, you can use our starter template:
-
-```bash
-# Create a new project from the starter template
-bun create https://github.com/kerlos/elysia-mcp-starter my-mcp-project
-
-# Navigate to the project
-cd my-mcp-project
-
-# Install dependencies
-bun install
-
-# Start development server
-bun run dev
-```
-
-The [elysia-mcp-starter](https://github.com/kerlos/elysia-mcp-starter) template includes:
-
-- Pre-configured Elysia setup with MCP plugin
-- TypeScript configuration
-- Development scripts
-- Basic project structure
-- Example MCP server implementation
-
 ## Quick Start
 
-```typescript
+```ts
 import { Elysia } from 'elysia';
-import { mcp } from 'elysia-mcp';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { mcp } from 'elysia-mcp';
 
-const app = new Elysia()
-  .use(
-    mcp({
-      serverInfo: {
-        name: 'my-mcp-server',
-        version: '1.0.0',
-      },
-      capabilities: {
-        tools: {},
-        resources: {},
-        prompts: {},
-        logging: {},
-      },
-      setupServer: async (server: McpServer) => {
-        // Register your MCP tools, resources, and prompts here
-        server.registerTool(
-          'echo',
-          {
-            description: 'Echoes back the provided text',
-            inputSchema: {
-              text: z.string().describe('Text to echo back'),
-            },
+const app = new Elysia().use(
+  mcp({
+    serverInfo: {
+      name: 'my-mcp-server',
+      version: '1.0.0',
+    },
+    capabilities: {
+      tools: {},
+    },
+    setupServer: async (server: McpServer) => {
+      server.registerTool(
+        'echo',
+        {
+          description: 'Echo back a string',
+          inputSchema: {
+            text: z.string().describe('Text to echo'),
           },
-          async (args) => {
-            return {
-              content: [{ type: 'text', text: `Echo: ${args.text}` }],
-            };
-          }
-        );
-      },
-    })
-  )
-  .listen(3000);
+        },
+        async ({ text }) => ({
+          content: [{ type: 'text', text: `Echo: ${text}` }],
+        })
+      );
+    },
+  })
+);
+
+app.listen(3000);
 ```
 
-## Usage
+Connect an MCP client to `http://localhost:3000/mcp`.
 
-### Running the Examples
+## Transport Contract
 
-**Basic Example:**
+- `POST` requests must contain exactly one JSON-RPC message. Batch bodies are rejected with `400 Invalid Request`.
+- Requests with an `Origin` header must match the request origin or an explicitly allowed origin.
+- Requests without an `Origin` header are allowed.
+- The adapter delegates transport behavior to the MCP SDK instead of reimplementing SSE or Streamable HTTP internals.
 
-```bash
-# Run the basic example server (port 3000)
-bun run example
+## Auth Model
 
-# Or with development mode (auto-restart)
-bun run dev
+The `authentication` hook is intentionally small:
+
+- You validate credentials and decide authorization.
+- You return `authInfo` when the request is allowed.
+- You return a `Response` when the request should be rejected.
+
+This package does not validate tokens, run OAuth flows, or manage authorization-server metadata for you.
+
+### Protected Resource Metadata
+
+When `protectedResourceMetadata` is configured, the plugin serves:
+
+```text
+/.well-known/oauth-protected-resource{basePath}
 ```
 
-**Multiple Servers Example:**
+For the default base path, that is `/.well-known/oauth-protected-resource/mcp`.
 
-```bash
-# Run the multiple MCP servers example (port 3000)
-bun example:multi
-```
+### Protected Server Example
 
-This example demonstrates how to create multiple MCP plugins in a single Elysia application:
-
-- **Math Operations Plugin** (`/math`) - Basic arithmetic tools:
-
-  - `add` - Add two numbers
-  - `multiply` - Multiply two numbers
-  - `power` - Calculate base to the power of exponent
-
-- **Text Utilities Plugin** (`/text`) - Text processing tools:
-  - `uppercase` - Convert text to uppercase
-  - `word_count` - Count words in text
-  - `reverse` - Reverse text characters
-  - `replace` - Replace text with global matching
-
-### Testing with MCP Inspector
-
-1. Install MCP Inspector:
-
-   ```bash
-   npx @modelcontextprotocol/inspector
-   ```
-
-2. Connect to your server:
-   - **Basic Example**: `http://localhost:3000/mcp`
-   - **Multiple Servers Example**:
-     - Math Plugin: `http://localhost:3000/math`
-     - Text Plugin: `http://localhost:3000/text`
-
-### Configuration Options
-
-- `serverInfo`: Server information
-- `capabilities`: MCP capabilities to advertise
-- `logger`: Custom logger instance (pino, winston, etc.) - see [Custom Logger](#custom-logger) section
-- `setupServer`: Callback to register tools, resources, and prompts
-- `basePath`: Base path for MCP endpoints (default: '/mcp')
-- `enableJsonResponse`: Enable JSON response mode instead of SSE streaming
-- `stateless`: Enable stateless mode (no session management)
-- `authentication`: Authentication handler for protected routes
-- `eventStore`: Event store for resumability support
-- `allowedOrigins`: Additional allowed `Origin` values for browser-based requests
-- `unsafeDisableOriginCheck`: Disable default origin validation
-- `protectedResourceMetadata`: Publish OAuth protected resource metadata for MCP auth discovery
-
-### Transport Notes
-
-- Streamable HTTP `POST` requests must include exactly one JSON-RPC message. Batch POST payloads are rejected with `400 Invalid Request`.
-- Requests without an `Origin` header are allowed. Requests with an `Origin` header must match the request origin or one of `allowedOrigins`.
-- Protected resource metadata is published at `/.well-known/oauth-protected-resource{basePath}` when `protectedResourceMetadata` is configured.
-
-### Session Management
-
-The plugin automatically handles session management via the `Mcp-Session-Id`
-header. Each session maintains its own state and can be terminated cleanly.
-
-### Modular Handler Architecture
-
-The plugin supports a modular handler architecture that allows you to create specialized endpoints for different MCP capabilities:
-
-```typescript
+```ts
+import { Elysia } from 'elysia';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import {
+  createUnauthorizedResponse,
+  getOAuthProtectedResourceMetadataUrl,
   mcp,
-  ToolsHandler,
-  ResourcesHandler,
-  PromptsHandler,
 } from 'elysia-mcp';
 
 const app = new Elysia().use(
   mcp({
-    /* config */
+    protectedResourceMetadata: {
+      authorizationServers: ['https://auth.example.com'],
+      scopesSupported: ['profile:read'],
+      resourceName: 'Example MCP Server',
+    },
+    authentication: async context => {
+      const url = new URL(context.request.url);
+      const metadataPath = '/.well-known/oauth-protected-resource/mcp';
+
+      if (
+        (context.request.method === 'GET' && url.pathname === metadataPath) ||
+        (context.request.method === 'POST' && isInitializeRequest(context.body))
+      ) {
+        return {};
+      }
+
+      const authHeader = context.request.headers.get('authorization');
+      if (authHeader !== 'Bearer dev-token') {
+        return {
+          response: createUnauthorizedResponse({
+            errorDescription: 'Missing or invalid bearer token',
+            resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(
+              context.request.url,
+              '/mcp'
+            ),
+          }),
+        };
+      }
+
+      return {
+        authInfo: {
+          token: 'dev-token',
+          clientId: 'local-dev',
+          scopes: ['profile:read'],
+        },
+      };
+    },
+    setupServer: async (server: McpServer) => {
+      server.registerTool(
+        'whoami',
+        {
+          description: 'Return the authenticated client id',
+          inputSchema: {},
+        },
+        async (_args, extra) => ({
+          content: [
+            {
+              type: 'text',
+              text: `clientId=${extra.authInfo?.clientId ?? 'unknown'}`,
+            },
+          ],
+        })
+      );
+    },
   })
 );
+
+app.listen(3000);
 ```
 
-## Custom Logger
+## Configuration
 
-The plugin supports custom logger instances, allowing you to use any logging library that conforms to the `ILogger` interface:
+`MCPPluginOptions`:
 
-```typescript
-interface ILogger {
-  info(message: string, ...args: unknown[]): void;
-  error(message: string, ...args: unknown[]): void;
-  warn(message: string, ...args: unknown[]): void;
-  debug(message: string, ...args: unknown[]): void;
-}
+- `basePath`: MCP route prefix. Defaults to `/mcp`.
+- `serverInfo`: MCP server name and version.
+- `capabilities`: Advertised server capabilities.
+- `setupServer`: Callback for registering tools, resources, and prompts.
+- `enableJsonResponse`: Enable JSON response mode where supported by the SDK.
+- `stateless`: Disable session management.
+- `mcpServer`: Provide your own `McpServer` instance.
+- `eventStore`: Event storage for resumability support.
+- `logger`: Custom logger implementing `ILogger`.
+- `enableLogging`: Deprecated convenience flag for the default logger.
+- `authentication`: Caller-managed auth hook returning `authInfo` or a rejection `Response`.
+- `protectedResourceMetadata`: Metadata for OAuth protected resource discovery.
+- `allowedOrigins`: Additional allowed values for the HTTP `Origin` header.
+- `unsafeDisableOriginCheck`: Disable the default origin check.
+
+Auth helpers exported by this package:
+
+- `createUnauthorizedResponse`
+- `createInsufficientScopeResponse`
+- `getOAuthProtectedResourceMetadataPath`
+- `getOAuthProtectedResourceMetadataUrl`
+
+## Examples
+
+```bash
+bun run example
+bun run example:multi
+bun run example:auth
 ```
 
-### Using Pino Logger
+The repository examples live in [`example/`](./example).
 
-```typescript
-import { Elysia } from 'elysia';
-import { mcp } from 'elysia-mcp';
-import pino from 'pino';
-
-const logger = pino({ level: 'debug' });
-
-const app = new Elysia()
-  .use(
-    mcp({
-      logger, // Pass your custom logger
-      serverInfo: {
-        name: 'my-mcp-server',
-        version: '1.0.0',
-      },
-      // ... other options
-    })
-  )
-  .listen(3000);
-```
-
-### Using Winston Logger
-
-```typescript
-import winston from 'winston';
-
-const logger = winston.createLogger({
-  level: 'debug',
-  format: winston.format.json(),
-  transports: [new winston.transports.Console()],
-});
-
-const app = new Elysia()
-  .use(
-    mcp({
-      logger, // Pass your winston logger
-      // ... other options
-    })
-  )
-  .listen(3000);
-```
-
-### Default Console Logger
-
-If you don't provide a custom logger, the plugin will use a default console logger when `enableLogging` is set to `true`:
-
-```typescript
-const app = new Elysia()
-  .use(
-    mcp({
-      enableLogging: true, // Uses default console logger with colors
-      // ... other options
-    })
-  )
-  .listen(3000);
-```
-
-### Custom Logger Implementation
-
-You can also implement your own logger:
-
-```typescript
-import type { ILogger } from 'elysia-mcp';
-
-class MyCustomLogger implements ILogger {
-  info(message: string, ...args: unknown[]): void {
-    // Your custom implementation
-  }
-  
-  error(message: string, ...args: unknown[]): void {
-    // Your custom implementation
-  }
-  
-  warn(message: string, ...args: unknown[]): void {
-    // Your custom implementation
-  }
-  
-  debug(message: string, ...args: unknown[]): void {
-    // Your custom implementation
-  }
-}
-
-const logger = new MyCustomLogger();
-
-const app = new Elysia()
-  .use(
-    mcp({
-      logger,
-      // ... other options
-    })
-  )
-  .listen(3000);
-```
-
-## API Reference
-
-### Tools
-
-Register tools using the MCP Server instance:
-
-```typescript
-server.registerTool(
-  'tool-name',
-  {
-    description: 'Tool description',
-    inputSchema: {
-      param: z.string().describe('Parameter description'),
-    },
-  },
-  async (args) => {
-    // Tool implementation
-    return {
-      content: [{ type: 'text', text: 'Tool result' }],
-    };
-  }
-);
-```
-
-### Resources
-
-Register resources for file or data access:
-
-```typescript
-server.registerResource(
-  'resource-name',
-  'resource://uri',
-  {
-    title: 'Resource Name',
-    description: 'Resource description',
-  },
-  async () => {
-    return {
-      contents: [
-        {
-          uri: 'resource://uri',
-          mimeType: 'text/plain',
-          text: 'Resource content',
-        },
-      ],
-    };
-  }
-);
-```
-
-### Prompts
-
-Register reusable prompt templates following MCP best practices:
-
-```typescript
-server.registerPrompt(
-  'prompt-name',
-  {
-    title: 'Prompt Title',
-    description: 'Prompt description',
-    argsSchema: {
-      param: z.string().describe('Parameter description'),
-    },
-  },
-  async (args) => {
-    return {
-      description: 'Generated prompt',
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `Generated prompt with ${args.param}`,
-          },
-        },
-      ],
-    };
-  }
-);
-```
-
-## Testing
-
-Run the comprehensive test suite:
+## Development
 
 ```bash
 bun test
+bun run build
 ```
-
-## License
-
-MIT - see [LICENSE](./LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Related
 
 - [Model Context Protocol](https://modelcontextprotocol.io/)
-- [ElysiaJS](https://elysiajs.com/)
 - [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
+- [ElysiaJS](https://elysiajs.com/)
 
-## Plugin Configuration
+## License
 
-### Plugin Options
-
-```typescript
-interface MCPPluginOptions {
-  /**
-   * Base path for MCP endpoints (default: '/mcp')
-   */
-  basePath?: string;
-
-  /**
-   * Server information
-   */
-  serverInfo?: {
-    name: string;
-    version: string;
-  };
-
-  /**
-   * MCP server capabilities
-   */
-  capabilities?: ServerCapabilities;
-
-  /**
-   * @deprecated Use logger option instead
-   * Enable or disable logging
-   */
-  enableLogging?: boolean;
-
-  /**
-   * Custom logger instance (pino, winston, etc.)
-   * If not provided and enableLogging is true, will use default console logger
-   */
-  logger?: ILogger;
-
-  /**
-   * Enable JSON response mode instead of SSE streaming
-   */
-  enableJsonResponse?: boolean;
-
-  /**
-   * Authentication handler
-   */
-  authentication?: (
-    context: McpContext
-  ) => Promise<{ authInfo?: AuthInfo; response?: unknown }>;
-
-  /**
-   * Setup function to configure the MCP server with tools, resources, and prompts
-   */
-  setupServer?: (server: McpServer) => void | Promise<void>;
-
-  /**
-   * Enable stateless mode (no session management)
-   */
-  stateless?: boolean;
-
-  /**
-   * Provide a custom MCP server instance
-   */
-  mcpServer?: McpServer;
-
-  /**
-   * Event store for resumability support
-   */
-  eventStore?: EventStore;
-}
-```
-
-## Architecture
-
-```mermaid
-flowchart LR
-    A["HTTP Client"] --> B["Elysia HTTP Handler"]
-    B --> C["MCP Plugin"]
-    C --> D["McpServer<br/>(Singleton)"]
-```
+MIT

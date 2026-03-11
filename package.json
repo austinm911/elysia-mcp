@@ -2,7 +2,7 @@
   "name": "elysia-mcp",
   "type": "module",
   "version": "0.1.1",
-  "description": "ElysiaJS plugin for Model Context Protocol with HTTP transport and stateful sessions",
+  "description": "Elysia adapter for the official Model Context Protocol Streamable HTTP server transport",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,6 +16,7 @@
     "dev": "bun run --watch example/basic-server.ts",
     "example": "bun run example/basic-server.ts",
     "example:multi": "bun run example/multiple-server.ts",
+    "example:auth": "bun run example/protected-server.ts",
     "build": "bun run build.ts",
     "prepublishOnly": "bun run build",
     "lint": "bunx biome lint ./src",
@@ -49,16 +50,13 @@
     "elysia": "^1.4.22",
     "typescript": "^5.9.3"
   },
-  "engines": {
-    "bun": ">=1.0.0"
-  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/kerlos/elysia-mcp.git"
+    "url": "https://github.com/austinm911/elysia-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/kerlos/elysia-mcp/issues"
+    "url": "https://github.com/austinm911/elysia-mcp/issues"
   },
-  "homepage": "https://github.com/kerlos/elysia-mcp#readme",
+  "homepage": "https://github.com/austinm911/elysia-mcp#readme",
   "packageManager": "bun@1.3.6"
 }

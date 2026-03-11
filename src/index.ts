@@ -51,11 +51,10 @@ export interface MCPPluginOptions {
   enableJsonResponse?: boolean;
 
   /**
-   * Authentication handler
+   * Authentication hook for protected routes.
+   * Token validation and authorization policy remain the caller's responsibility.
    */
-  authentication?: (
-    context: McpContext
-  ) => Promise<{ authInfo?: AuthInfo; response?: unknown }>;
+  authentication?: AuthenticationHandler;
 
   /**
    * Setup function to configure the MCP server with tools, resources, and prompts
@@ -109,6 +108,15 @@ export interface AuthChallengeOptions {
   resourceMetadataUrl?: string;
   scope?: string[];
 }
+
+export interface AuthenticationResult {
+  authInfo?: AuthInfo;
+  response?: Response;
+}
+
+export type AuthenticationHandler = (
+  context: McpContext
+) => Promise<AuthenticationResult>;
 
 export const transports: Record<string, ElysiaStreamingHttpTransport> = {};
 
